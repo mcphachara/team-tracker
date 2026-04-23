@@ -971,6 +971,7 @@ function authInit() {
 
     // Show overlay
     const overlay    = document.getElementById('authOverlay');
+    overlay.classList.remove('hidden');  // ลบ hidden ออกเพื่อแสดง login screen
     const pinArea    = document.getElementById('authPinArea');
     const btnGroup   = document.getElementById('authBtnGroup');
     const pinInput   = document.getElementById('authPinInput');
