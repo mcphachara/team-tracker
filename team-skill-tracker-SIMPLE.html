@@ -106,6 +106,16 @@
         .action-button { background: transparent; border: none; cursor: pointer; padding: 0.25rem 0.5rem; border-radius: 0.375rem; font-size: 1.25rem; transition: background 0.2s; }
         .action-button:hover:not(:disabled) { background: rgba(0,0,0,0.05); }
         .action-button:disabled { opacity: 0.3; cursor: not-allowed; }
+        /* Period Tab Bar */
+        .period-tab-bar { background: white; border-bottom: 2px solid #e5e7eb; padding: 0 1.5rem; display: flex; align-items: center; gap: 0.125rem; overflow-x: auto; scrollbar-width: none; }
+        .period-tab-bar::-webkit-scrollbar { display: none; }
+        .period-tab { display: flex; align-items: center; gap: 0.375rem; padding: 0.625rem 1rem; border: none; background: none; cursor: pointer; font-size: 0.875rem; font-weight: 500; color: #6b7280; border-bottom: 3px solid transparent; margin-bottom: -2px; transition: all 0.2s; white-space: nowrap; user-select: none; font-family: 'Prompt', sans-serif; }
+        .period-tab:hover { color: #374151; border-bottom-color: #d1d5db; background: #f9fafb; }
+        .period-tab.period-tab-active { color: #73AD44; border-bottom-color: #73AD44; font-weight: 600; }
+        .period-tab-close { background: none; border: none; cursor: pointer; color: #9ca3af; padding: 2px; border-radius: 50%; display: flex; align-items: center; justify-content: center; width: 16px; height: 16px; }
+        .period-tab-close:hover { background: #fee2e2; color: #dc2626; }
+        .period-tab-add { background: none; border: 2px dashed #d1d5db; cursor: pointer; color: #6b7280; padding: 0.3rem 0.6rem; border-radius: 0.5rem; display: flex; align-items: center; justify-content: center; margin: 0.375rem 0 0.375rem 0.375rem; transition: all 0.2s; }
+        .period-tab-add:hover { border-color: #73AD44; color: #73AD44; background: #f0f9e8; }
         .filter-btn { padding: 0.5rem 1rem; border-radius: 0.5rem; border: 1px solid #d1d5db; background: white; cursor: pointer; font-size: 0.875rem; transition: all 0.2s; box-shadow: 2px 2px 4px rgba(0,0,0,0.05), -1px -1px 3px rgba(255,255,255,0.8); font-weight: 500; }
         .filter-btn:hover:not(.active) { transform: translateY(-1px); box-shadow: 3px 3px 6px rgba(0,0,0,0.08), -2px -2px 4px rgba(255,255,255,0.9); }
         
@@ -495,6 +505,9 @@
             </div>
         </div>
     </header>
+
+    <!-- Period Tab Bar -->
+    <div class="period-tab-bar" id="periodTabBar"></div>
 
     <main class="main-content">
         <div style="margin-bottom: 1.5rem; display: flex; justify-content: space-between; align-items: center;">
@@ -1033,6 +1046,7 @@ function authInit() {
         document.body.classList.add('guest-mode');
         overlay.classList.add('hidden');
         authUpdateBadge();
+        renderPeriodTabs();
     });
 
     backBtn.addEventListener('click', function() {
@@ -1047,6 +1061,7 @@ function authInit() {
             authSetRole('admin');
             overlay.classList.add('hidden');
             authUpdateBadge();
+            renderPeriodTabs();
         } else {
             pinError.style.display = 'block';
             pinInput.value = '';
@@ -1160,6 +1175,8 @@ const DEFAULT_SKILL_GROUPS = [
 
 const state = {
     teamName: 'ทีมของเรา',
+    periods: [],
+    activePeriodId: null,
     members: [],
     skillGroups: JSON.parse(JSON.stringify(DEFAULT_SKILL_GROUPS)),
     kpiGroups: [],
@@ -1378,12 +1395,37 @@ function setupModalScrollReset() {
 
 function applyStateData(data) {
     state.teamName = data.teamName || 'ทีมของเรา';
-    state.members = data.members || [];
-    state.skillGroups = data.skillGroups || JSON.parse(JSON.stringify(DEFAULT_SKILL_GROUPS));
-    state.kpiGroups = data.kpiGroups || [];
-    state.teamKPIs = data.teamKPIs || [];
-    state.teamSkills = data.teamSkills || [];
-    state.kpis = data.kpis || [];
+
+    if (data.periods && Array.isArray(data.periods) && data.periods.length > 0) {
+        // New multi-period format
+        state.periods = data.periods;
+        state.activePeriodId = data.activePeriodId || data.periods[0].id;
+    } else {
+        // Old single-period format → migrate automatically to periods array
+        const firstPeriod = {
+            id: 'period-initial',
+            label: 'Q1/2026',
+            members: data.members || [],
+            skillGroups: data.skillGroups || JSON.parse(JSON.stringify(DEFAULT_SKILL_GROUPS)),
+            kpiGroups: data.kpiGroups || [],
+            teamKPIs: data.teamKPIs || [],
+            teamSkills: data.teamSkills || [],
+            kpis: data.kpis || [],
+        };
+        state.periods = [firstPeriod];
+        state.activePeriodId = firstPeriod.id;
+    }
+
+    // Load active period into working state
+    const active = state.periods.find(p => p.id === state.activePeriodId) || state.periods[0];
+    state.activePeriodId = active.id;
+    state.members = active.members || [];
+    state.skillGroups = active.skillGroups || JSON.parse(JSON.stringify(DEFAULT_SKILL_GROUPS));
+    state.kpiGroups = active.kpiGroups || [];
+    state.teamKPIs = active.teamKPIs || [];
+    state.teamSkills = active.teamSkills || [];
+    state.kpis = active.kpis || [];
+
     migrateLevelScale();
     state.members.forEach(m => { if (!m.kpis) m.kpis = {}; });
 }
@@ -1473,21 +1515,160 @@ function migrateLevelScale() {
     saveData();
 }
 
-function saveData() {
-    const data = {
-        teamName: state.teamName,
+function packActivePeriod() {
+    const idx = state.periods.findIndex(p => p.id === state.activePeriodId);
+    if (idx < 0) return;
+    state.periods[idx] = {
+        ...state.periods[idx],
         members: state.members,
         skillGroups: state.skillGroups,
         kpiGroups: state.kpiGroups,
         teamKPIs: state.teamKPIs,
         teamSkills: state.teamSkills,
-        kpis: state.kpis
+        kpis: state.kpis,
     };
-    // 1. บันทึก localStorage ทันที (cache ไว้ใช้ offline)
-    try { localStorage.setItem('teamSkillTrackerData', JSON.stringify(data)); } catch(e) {}
-    // 2. sync ไป Firestore (ทุก user เห็นข้อมูลเดียวกัน)
+}
+
+function saveData() {
+    packActivePeriod();
+    const data = {
+        teamName: state.teamName,
+        activePeriodId: state.activePeriodId,
+        periods: state.periods,
+    };
+    const jsonStr = JSON.stringify(data);
+    // Warn if data is approaching Firestore 1MB document limit
+    const sizeKB = new TextEncoder().encode(jsonStr).length / 1024;
+    if (sizeKB > 800) {
+        showToast(`ข้อมูลใกล้เต็ม (${sizeKB.toFixed(0)}KB / 1,024KB) — พิจารณา Export ข้อมูลเก่าออกก่อน`, 'error');
+    }
+    try { localStorage.setItem('teamSkillTrackerData', jsonStr); } catch(e) {}
     DOC_REF.set(data).catch(e => console.warn('Firestore sync failed:', e));
 }
+
+// ─── Period Management ────────────────────────────────────────────
+function renderPeriodTabs() {
+    const bar = document.getElementById('periodTabBar');
+    if (!bar) return;
+    const admin = isAdmin();
+    bar.innerHTML = state.periods.map(p => {
+        const isActive = p.id === state.activePeriodId;
+        return `<div class="period-tab ${isActive ? 'period-tab-active' : ''}"
+                    onclick="switchPeriod('${p.id}')"
+                    ondblclick="${admin ? `renamePeriod('${p.id}')` : ''}"
+                    title="${admin ? 'ดับเบิลคลิกเพื่อเปลี่ยนชื่อ' : ''}">
+                    <span>${p.label}</span>
+                    ${admin && state.periods.length > 1 ? `
+                        <button class="period-tab-close" onclick="deletePeriod('${p.id}');event.stopPropagation();" title="ลบ Period นี้">
+                            <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3"><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></svg>
+                        </button>` : ''}
+                </div>`;
+    }).join('');
+    if (admin) {
+        bar.innerHTML += `<button class="period-tab-add" onclick="promptAddPeriod()" title="เพิ่ม Period ใหม่">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>
+        </button>`;
+    }
+}
+
+function switchPeriod(periodId) {
+    if (periodId === state.activePeriodId) return;
+    packActivePeriod();
+    const target = state.periods.find(p => p.id === periodId);
+    if (!target) return;
+    state.activePeriodId = periodId;
+    state.members = target.members || [];
+    state.skillGroups = target.skillGroups || JSON.parse(JSON.stringify(DEFAULT_SKILL_GROUPS));
+    state.kpiGroups = target.kpiGroups || [];
+    state.teamKPIs = target.teamKPIs || [];
+    state.teamSkills = target.teamSkills || [];
+    state.kpis = target.kpis || [];
+    state.viewDate = null;
+    state.selectedMemberIndex = null;
+    state.selectedSkillGroupFilter = null;
+    migrateLevelScale();
+    state.members.forEach(m => { if (!m.kpis) m.kpis = {}; });
+    saveData();
+    render();
+    renderDashboard();
+    renderPeriodTabs();
+}
+
+function promptAddPeriod() {
+    showInputModal('เพิ่ม Period ใหม่', 'เช่น Q2/2026', '', (label) => {
+        if (!label.trim()) return;
+        createPeriod(label.trim());
+    }, 20);
+}
+
+function createPeriod(label) {
+    packActivePeriod();
+    const id = 'period-' + Date.now();
+    const newPeriod = {
+        id,
+        label,
+        members: [],
+        skillGroups: JSON.parse(JSON.stringify(state.skillGroups)),
+        kpiGroups: JSON.parse(JSON.stringify(state.kpiGroups)),
+        teamKPIs: [],
+        teamSkills: JSON.parse(JSON.stringify(state.teamSkills)),
+        kpis: [],
+    };
+    state.periods.push(newPeriod);
+    state.activePeriodId = id;
+    state.members = newPeriod.members;
+    state.skillGroups = newPeriod.skillGroups;
+    state.kpiGroups = newPeriod.kpiGroups;
+    state.teamKPIs = newPeriod.teamKPIs;
+    state.teamSkills = newPeriod.teamSkills;
+    state.kpis = newPeriod.kpis;
+    state.viewDate = null;
+    state.selectedMemberIndex = null;
+    state.selectedSkillGroupFilter = null;
+    saveData();
+    render();
+    renderDashboard();
+    renderPeriodTabs();
+    showToast(`สร้าง "${label}" สำเร็จ`);
+}
+
+function deletePeriod(periodId) {
+    if (state.periods.length <= 1) { showToast('ไม่สามารถลบ Period สุดท้ายได้', 'error'); return; }
+    const period = state.periods.find(p => p.id === periodId);
+    if (!period) return;
+    showConfirmModal(`ลบ "${period.label}" ออก?\nข้อมูลทั้งหมดใน Period นี้จะหายถาวร`, () => {
+        state.periods = state.periods.filter(p => p.id !== periodId);
+        if (state.activePeriodId === periodId) {
+            const next = state.periods[0];
+            state.activePeriodId = next.id;
+            state.members = next.members || [];
+            state.skillGroups = next.skillGroups || JSON.parse(JSON.stringify(DEFAULT_SKILL_GROUPS));
+            state.kpiGroups = next.kpiGroups || [];
+            state.teamKPIs = next.teamKPIs || [];
+            state.teamSkills = next.teamSkills || [];
+            state.kpis = next.kpis || [];
+            state.viewDate = null;
+            state.selectedMemberIndex = null;
+        }
+        saveData();
+        render();
+        renderDashboard();
+        renderPeriodTabs();
+        showToast(`ลบ "${period.label}" แล้ว`);
+    });
+}
+
+function renamePeriod(periodId) {
+    const period = state.periods.find(p => p.id === periodId);
+    if (!period) return;
+    showInputModal('เปลี่ยนชื่อ Period', 'ชื่อ Period', period.label, (newLabel) => {
+        if (!newLabel.trim()) return;
+        period.label = newLabel.trim();
+        saveData();
+        renderPeriodTabs();
+    }, 20);
+}
+// ─────────────────────────────────────────────────────────────────
 
 function showInputModal(title, placeholder, defaultValue, callback, maxLength = 50) {
     document.getElementById('inputModalTitle').textContent = title;
@@ -1783,6 +1964,7 @@ function updateSkillDirect(memberIndex, groupId, skillName, newLevel) {
 function render() {
     document.getElementById('teamNameDisplay').textContent = state.teamName;
     document.getElementById('memberCount').textContent = state.members.length;
+    renderPeriodTabs();
     
     const grid = document.getElementById('cardsGrid');
     if (state.members.length === 0) {
