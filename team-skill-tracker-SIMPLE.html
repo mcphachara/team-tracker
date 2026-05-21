@@ -965,10 +965,18 @@ const DOC_REF = db.collection('tracker').doc('teamData');
 // ════════════════════════════════════════
 //  AUTH  (Admin PIN / Guest)
 // ════════════════════════════════════════
-const AUTH_KEY   = 'trackerRole';          // sessionStorage key
-const PIN_KEY    = 'trackerAdminPIN';      // localStorage key
+const AUTH_KEY    = 'trackerRole';         // sessionStorage key
+const PIN_KEY     = 'trackerAdminPIN';     // localStorage key (legacy — for migration only)
 const PIN_DEFAULT = '1234';
 
+// SHA-256 hash of a PIN string (returns hex string, async)
+async function hashPIN(pin) {
+    const buf = new TextEncoder().encode(String(pin));
+    const hashBuf = await crypto.subtle.digest('SHA-256', buf);
+    return Array.from(new Uint8Array(hashBuf)).map(b => b.toString(16).padStart(2,'0')).join('');
+}
+
+// Legacy getter — only used during migration
 function authGetPIN() {
     return localStorage.getItem(PIN_KEY) || PIN_DEFAULT;
 }
@@ -1056,8 +1064,9 @@ function authInit() {
         pinError.style.display = 'none';
     });
 
-    function tryLogin() {
-        if (pinInput.value === authGetPIN()) {
+    async function tryLogin() {
+        const inputHash = await hashPIN(pinInput.value);
+        if (inputHash === state.adminPinHash) {
             authSetRole('admin');
             overlay.classList.add('hidden');
             authUpdateBadge();
@@ -1089,8 +1098,9 @@ const WRITE_ACTIONS = new Set([
 ]);
 
 function openChangePIN() {
-    showInputModal('PIN ปัจจุบัน', '••••', '', function(current) {
-        if (current !== authGetPIN()) {
+    showInputModal('PIN ปัจจุบัน', '••••', '', async function(current) {
+        const currentHash = await hashPIN(current);
+        if (currentHash !== state.adminPinHash) {
             showToast('PIN ไม่ถูกต้อง', 'error');
             return;
         }
@@ -1101,12 +1111,14 @@ function openChangePIN() {
                     return;
                 }
                 setTimeout(() => {
-                    showInputModal('ยืนยัน PIN ใหม่', '', '', function(confirmPin) {
+                    showInputModal('ยืนยัน PIN ใหม่', '', '', async function(confirmPin) {
                         if (confirmPin !== newPin) {
                             showToast('PIN ไม่ตรงกัน', 'error');
                             return;
                         }
-                        localStorage.setItem(PIN_KEY, newPin);
+                        state.adminPinHash = await hashPIN(newPin);
+                        localStorage.removeItem(PIN_KEY); // ลบ plain-text PIN เก่า
+                        saveData();                        // sync hash ไป Firestore ทันที
                         showToast('เปลี่ยน PIN สำเร็จ ✓');
                     });
                 }, 150);
@@ -1175,6 +1187,7 @@ const DEFAULT_SKILL_GROUPS = [
 
 const state = {
     teamName: 'ทีมของเรา',
+    adminPinHash: null,
     periods: [],
     activePeriodId: null,
     members: [],
@@ -1395,6 +1408,7 @@ function setupModalScrollReset() {
 
 function applyStateData(data) {
     state.teamName = data.teamName || 'ทีมของเรา';
+    state.adminPinHash = data.adminPinHash || null; // null = needs migration
 
     if (data.periods && Array.isArray(data.periods) && data.periods.length > 0) {
         // New multi-period format
@@ -1437,6 +1451,16 @@ function loadFromLocalStorage() {
     }
 }
 
+async function migratePINIfNeeded() {
+    // If no hash stored yet → hash the old localStorage PIN (or default '1234') and save
+    if (!state.adminPinHash) {
+        const oldPin = localStorage.getItem(PIN_KEY) || PIN_DEFAULT;
+        state.adminPinHash = await hashPIN(oldPin);
+        localStorage.removeItem(PIN_KEY); // remove plain-text PIN
+        saveData();                        // persist hash to Firestore
+    }
+}
+
 async function loadData() {
     try {
         const doc = await DOC_REF.get();
@@ -1457,6 +1481,8 @@ async function loadData() {
         console.warn('Firestore unavailable, using local cache:', e);
         loadFromLocalStorage();
     }
+    // Migrate plain-text PIN → SHA-256 hash in Firestore (runs once, silently)
+    await migratePINIfNeeded();
 }
 
 function migrateLevelScale() {
@@ -1533,6 +1559,7 @@ function saveData() {
     packActivePeriod();
     const data = {
         teamName: state.teamName,
+        adminPinHash: state.adminPinHash,
         activePeriodId: state.activePeriodId,
         periods: state.periods,
     };
